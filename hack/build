@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+CROSS=${CROSS:-false}
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    DIRTY="-dirty"
+fi
+
+COMMIT=$(git rev-parse --short HEAD)
+GIT_TAG=$(git tag -l --contains HEAD | head -n 1)
+
+if [[ -z "$DIRTY" && -n "$GIT_TAG" ]]; then
+    VERSION=$GIT_TAG
+else
+    VERSION="${COMMIT}${DIRTY}"
+fi
+
+go_build() {
+  mkdir -p bin/$1/$2/$VERSION
+  f=bin/$1/$2/$VERSION/v2-catalog-transform
+  GOOS=$1 GOARCH=$2 go build -o $f
+  tar czvf v2-catalog-transform-$1-$2-$VERSION.tar.gz $f
+}
+
+rm -rf bin/*
+if [ "$CROSS" == "true" ]; then
+  go_build darwin amd64
+  go_build linux amd64
+  go_build linux arm
+  go_build windows 386
+  go_build windows amd64
+else
+  go build -o bin/v2-catalog-transform
+fi
+
