@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 CROSS=${CROSS:-false}
+NAME=v2-catalog-transform
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     DIRTY="-dirty"
@@ -16,10 +17,11 @@ else
 fi
 
 go_build() {
+  echo Building for os=$1 arch=$2
   mkdir -p bin/$1/$2/$VERSION
-  f=bin/$1/$2/$VERSION/v2-catalog-transform
+  f=bin/$1/$2/$VERSION/$NAME
   GOOS=$1 GOARCH=$2 go build -o $f
-  tar czvf v2-catalog-transform-$1-$2-$VERSION.tar.gz $f
+  tar -C bin/$1/$2/$VERSION -czvf bin/$NAME-$1-$2-$VERSION.tar.gz $NAME
 }
 
 rm -rf bin/*
@@ -30,6 +32,6 @@ if [ "$CROSS" == "true" ]; then
   go_build windows 386
   go_build windows amd64
 else
-  go build -o bin/v2-catalog-transform
+  go build -o bin/$NAME
 fi
 

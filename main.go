@@ -291,6 +291,26 @@ func (v *RancherTemplateVersion) Parse() error {
 	return nil
 }
 
+type Service map[string]map[string]interface{}
+
+func (v *RancherTemplateVersion) merge(a Service, b Service) Service {
+	if a == nil {
+		return b
+	} else if b == nil {
+		return a
+	}
+	for ak, av := range a {
+		if b[ak] == nil {
+			b[ak] = av
+		} else {
+			for avk, avv := range av {
+				b[ak][avk] = avv
+			}
+		}
+	}
+	return b
+}
+
 func (v *RancherTemplateVersion) Transform(preserve *bool) error {
 	// rename the root folder to catalog version
 	if v.RancherCompose.Catalog != nil && v.RancherCompose.Catalog.Version != "" {
@@ -318,38 +338,22 @@ func (v *RancherTemplateVersion) Transform(preserve *bool) error {
 	// merge docker/rancher compose into data
 	var data []byte
 	var err error
-
 	// docker/rancher compose files may be either v1 or v2
 	switch {
 	case v.DockerComposeV1 != nil && v.RancherComposeV1 != nil:
-		for name, data := range v.RancherComposeV1.Services {
-			for k, l := range data {
-				v.DockerComposeV1.Services[name][k] = l
-			}
-		}
+		v.DockerComposeV1.Services = v.merge(v.DockerComposeV1.Services, v.RancherComposeV1.Services)
 		data, err = yaml.Marshal(v.DockerComposeV1)
 	case v.DockerComposeV1 != nil && v.RancherComposeV2 != nil:
-		for name, data := range v.RancherComposeV2.Services {
-			for k, l := range data {
-				v.DockerComposeV1.Services[name][k] = l
-			}
-		}
+		v.DockerComposeV1.Services = v.merge(v.DockerComposeV1.Services, v.RancherComposeV2.Services)
 		data, err = yaml.Marshal(v.DockerComposeV1)
 	case v.DockerComposeV2 != nil && v.RancherComposeV1 != nil:
-		for name, data := range v.RancherComposeV1.Services {
-			for k, l := range data {
-				v.DockerComposeV2.Services[name][k] = l
-			}
-		}
+		v.DockerComposeV2.Services = v.merge(v.DockerComposeV2.Services, v.RancherComposeV1.Services)
 		data, err = yaml.Marshal(v.DockerComposeV2)
 	case v.DockerComposeV2 != nil && v.RancherComposeV2 != nil:
-		for name, data := range v.RancherComposeV2.Services {
-			for k, l := range data {
-				v.DockerComposeV2.Services[name][k] = l
-			}
-		}
+		v.DockerComposeV2.Services = v.merge(v.DockerComposeV2.Services, v.RancherComposeV2.Services)
 		data, err = yaml.Marshal(v.DockerComposeV2)
 	}
+
 	if err != nil {
 		return err
 	} else if len(data) > 0 {
