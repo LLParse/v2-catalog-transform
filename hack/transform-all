@@ -1,0 +1,13 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})/.."
+
+heads=(development hosted longhorn master v1.6-development v1.6-release)
+
+url="git@github.com:rancher/rancher-catalog"
+urls=""
+for head in ${heads[@]}; do
+  urls="$urls $url~$head"
+done
+
+bin/v2-catalog-transform $urls

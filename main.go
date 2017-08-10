@@ -1,17 +1,17 @@
 package main
 
-// Translate your catalog into v2 format and normalize it.
+// Transform Rancher catalog into normalized v2 format.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
 
-	"github.com/google/uuid"
+	log "github.com/Sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 )
 
@@ -20,10 +20,11 @@ type RancherCatalog struct {
 	Branch    string
 	CloneDir  string
 	Templates []*RancherTemplate
+	Log       *log.Entry
 }
 
 func NewRancherCatalog(url string) *RancherCatalog {
-	p := strings.Split(url, "@")
+	p := strings.Split(url, "~")
 	endpoint := ""
 	branch := "master"
 	switch len(p) {
@@ -33,23 +34,27 @@ func NewRancherCatalog(url string) *RancherCatalog {
 	case 1:
 		endpoint = p[0]
 	default:
-		log.Printf("Invalid URL: %s", url)
+		log.Infof("Invalid URL: %s", url)
 		return nil
 	}
-
 	return &RancherCatalog{
 		Endpoint:  endpoint,
 		Branch:    branch,
 		Templates: []*RancherTemplate{},
+		Log: log.WithFields(log.Fields{
+			"endpoint": endpoint,
+			"branch":   branch,
+		}),
 	}
 }
 
 func (c *RancherCatalog) Clone() error {
-	u, err := uuid.NewRandom()
-	if err == nil {
-		c.CloneDir = u.String()
-		err = exec.Command("git", "clone", c.Endpoint, "--quiet",
-			"--single-branch", "--branch", c.Branch, c.CloneDir).Run()
+	parts := strings.Split(c.Endpoint, "/")
+	c.CloneDir = fmt.Sprintf("output/%s-%s", parts[len(parts)-1], c.Branch)
+	out, err := exec.Command("git", "clone", c.Endpoint, "--quiet",
+		"--single-branch", "--branch", c.Branch, c.CloneDir).CombinedOutput()
+	if err != nil {
+		err = errors.New(fmt.Sprintf("[%s] %s", err, string(out)))
 	}
 	return err
 }
@@ -65,7 +70,7 @@ func (c *RancherCatalog) Parse() error {
 			for _, file := range files {
 				if file.IsDir() {
 					templateDir := strings.Join([]string{templateTypeDir, file.Name()}, "/")
-					c.Templates = append(c.Templates, NewRancherTemplate(templateDir))
+					c.Templates = append(c.Templates, NewRancherTemplate(c, templateDir))
 				}
 			}
 		}
@@ -97,12 +102,16 @@ type RancherTemplate struct {
 	Config         *RancherTemplateConfig
 	IconFilepath   string
 	Versions       []*RancherTemplateVersion
+	Log            *log.Entry
 }
 
-func NewRancherTemplate(templateDir string) *RancherTemplate {
+func NewRancherTemplate(c *RancherCatalog, templateDir string) *RancherTemplate {
 	return &RancherTemplate{
 		Dir:      templateDir,
 		Versions: []*RancherTemplateVersion{},
+		Log: c.Log.WithFields(log.Fields{
+			"dir": templateDir,
+		}),
 	}
 }
 
@@ -118,7 +127,7 @@ func (t *RancherTemplate) Parse() error {
 			filepath := strings.Join([]string{t.Dir, file.Name()}, "/")
 			switch {
 			case file.IsDir():
-				t.Versions = append(t.Versions, NewRancherTemplateVersion(filepath))
+				t.Versions = append(t.Versions, NewRancherTemplateVersion(t, filepath))
 			case file.Name() == "config.yml":
 				t.ConfigFilepath = filepath
 				var data []byte
@@ -131,13 +140,13 @@ func (t *RancherTemplate) Parse() error {
 			case strings.HasPrefix(file.Name(), "catalogIcon-"):
 				t.IconFilepath = filepath
 			default:
-				// log.Printf("Unrecognized file: %s", filepath)
+				// t.Log.Warnf("Unrecognized file: %s", filepath)
 			}
 		}
 	}
 	for _, v := range t.Versions {
 		if err := v.Parse(); err != nil {
-			log.Printf("Template version error: %v", err)
+			t.Log.Warn(err)
 		}
 	}
 	return nil
@@ -188,19 +197,21 @@ func (t *RancherTemplate) Transform(preserve *bool) error {
 }
 
 type RancherTemplateVersion struct {
-	Dir               string
-	DockerComposeRaw  []byte
-	RancherComposeRaw []byte
-	DockerComposeV1   *DockerComposeV1
-	DockerComposeV2   *DockerComposeV2
-	RancherComposeV1  *DockerComposeV1
-	RancherComposeV2  *DockerComposeV2
-	RancherCompose    *RancherCompose
+	Dir              string
+	DockerComposeV1  *DockerComposeV1
+	DockerComposeV2  *DockerComposeV2
+	RancherComposeV1 *DockerComposeV1
+	RancherComposeV2 *DockerComposeV2
+	RancherCompose   *RancherCompose
+	Log              *log.Entry
 }
 
-func NewRancherTemplateVersion(versionDir string) *RancherTemplateVersion {
+func NewRancherTemplateVersion(t *RancherTemplate, versionDir string) *RancherTemplateVersion {
 	return &RancherTemplateVersion{
 		Dir: versionDir,
+		Log: t.Log.WithFields(log.Fields{
+			"dir": versionDir,
+		}),
 	}
 }
 
@@ -221,9 +232,6 @@ func (v *RancherTemplateVersion) getDockerComposeFilepath(newFilename bool) stri
 	}
 
 	filepath := strings.Join([]string{v.Dir, filename}, "/")
-	// if _, err := os.Stat(filepath); err != nil {
-	// 	filepath = filepath + ".tpl"
-	// }
 	return filepath
 }
 
@@ -248,15 +256,14 @@ func (v *RancherTemplateVersion) DetectComposeVersion(data []byte) string {
 func (v *RancherTemplateVersion) Parse() error {
 
 	if data, err := ioutil.ReadFile(v.getRancherComposeFilepath(false)); err != nil {
-		return err
+		v.Log.Warn("Error reading rancher-compose.yml")
 	} else {
-		v.RancherComposeRaw = data
 		rc := RancherCompose{}
 		if err = yaml.Unmarshal(data, &rc); err == nil {
 			v.RancherCompose = &rc
 		}
 
-		switch v.DetectComposeVersion(v.RancherComposeRaw) {
+		switch v.DetectComposeVersion(data) {
 		case "1":
 			dc := DockerComposeV1{}
 			if err = yaml.Unmarshal(data, &dc); err == nil {
@@ -271,10 +278,9 @@ func (v *RancherTemplateVersion) Parse() error {
 	}
 
 	if data, err := ioutil.ReadFile(v.getDockerComposeFilepath(false)); err != nil {
-		return err
+		v.Log.Warn("Error reading docker-compose.yml")
 	} else {
-		v.DockerComposeRaw = data
-		switch v.DetectComposeVersion(v.DockerComposeRaw) {
+		switch v.DetectComposeVersion(data) {
 		case "1":
 			dc := DockerComposeV1{}
 			if err = yaml.Unmarshal(data, &dc); err == nil {
@@ -433,32 +439,39 @@ func main() {
 	if urls := flag.Args(); len(urls) == 0 {
 		log.Fatalf(`Must provide at least one URL as argument
 Example:
-  https://git.rancher.io/rancher-catalog@master
-  https://github.com/rancher/rancher-catalog@hosted
+  https://git.rancher.io/rancher-catalog~master
+  https://github.com/rancher/rancher-catalog~hosted
   https://github.com/rancher/community-catalog`)
 	} else {
 		if *preserve {
-			log.Printf("Preserve enabled")
+			log.Infof("Preserve enabled")
 		}
+
+		catalogs := make(map[string]map[string]*RancherCatalog)
 		for _, url := range urls {
 			c := NewRancherCatalog(url)
-			log.Printf("Cloning catalog %s", c)
-			if err := c.Clone(); err != nil {
-				log.Printf("Error cloning catalog: %v", err)
-				continue
+			if catalogs[c.Endpoint] == nil {
+				catalogs[c.Endpoint] = make(map[string]*RancherCatalog)
 			}
-			log.Printf("Parsing catalog %s", c)
-			if err := c.Parse(); err != nil {
-				log.Printf("Error parsing catalog: %v", err)
-				continue
-			}
-			log.Printf("Transforming catalog %s", c)
-			if err := c.Transform(preserve); err != nil {
-				log.Printf("Error transforming catalog: %v", err)
-				continue
-			}
+			catalogs[c.Endpoint][c.Branch] = c
+			c.Log.Info("Begin")
 
-			log.Printf("Complete!")
+			var err error
+			if err = c.Clone(); err != nil {
+				c.Log.Fatalf("Error cloning catalog: %s", err)
+			}
+			c.Log.Info("Clone Complete")
+
+			if err = c.Parse(); err != nil {
+				c.Log.Fatalf("Error parsing catalog: %s", err)
+			}
+			c.Log.Info("Parse Complete")
+
+			if err = c.Transform(preserve); err != nil {
+				c.Log.Fatalf("Error transforming catalog: %s", err)
+			}
+			c.Log.Info("Transform Complete")
 		}
+		log.Info("Exiting")
 	}
 }

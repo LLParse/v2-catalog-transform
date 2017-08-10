@@ -25,6 +25,7 @@ go_build() {
 }
 
 rm -rf bin/*
+gofmt -w *.go
 if [ "$CROSS" == "true" ]; then
   go_build darwin amd64
   go_build linux amd64
